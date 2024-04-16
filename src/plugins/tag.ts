@@ -1,5 +1,6 @@
-import { Bot, Message } from '..';
+import { Bot } from '../bot';
 import { PluginBase } from '../plugin';
+import { Message } from '../types';
 import {
   allButNWord,
   delTag,
@@ -65,16 +66,16 @@ export class TagPlugin extends PluginBase {
       input = allButNWord(input, 1);
     }
 
-    let target = getTarget(this.bot, msg, getInput(msg, false));
+    let target = await getTarget(this.bot, msg, getInput(msg, false));
     let name = null;
     if (target) {
-      name = getUsername(target);
+      name = await getUsername(this.bot, target);
     } else if (getWord(input, 1) == '-g') {
       target = String(msg.conversation.id);
-      name = getUsername(target);
+      name = await getUsername(this.bot, target);
     } else {
       target = String(msg.sender.id);
-      name = getUsername(target);
+      name = await getUsername(this.bot, target);
     }
 
     const tags = input.split(' ');
@@ -85,15 +86,15 @@ export class TagPlugin extends PluginBase {
 
     // Adds a tag to user or group.
     if (isCommand(this, 1, msg.content)) {
-      tags.map((tag) => {
-        if (!hasTag(this.bot, target, tag)) {
+      tags.map(async (tag) => {
+        if (!(await hasTag(this.bot, target, tag))) {
           setTag(this.bot, target, tag);
         }
       });
       this.bot.replyMessage(msg, `<b>👤 ${name}</b>\n🏷 +<code>${tags.join('</code>\n🏷 +<code>')}</code>`);
     } else if (isCommand(this, 2, msg.content)) {
-      tags.map((tag) => {
-        if (hasTag(this.bot, target, tag)) {
+      tags.map(async (tag) => {
+        if (await hasTag(this.bot, target, tag)) {
           delTag(this.bot, target, tag);
         }
       });

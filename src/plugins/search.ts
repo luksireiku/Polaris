@@ -1,7 +1,10 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import format from 'string-format';
-import { Bot, Message } from '..';
+
 import { PluginBase } from '../plugin';
 import { generateCommandHelp, getInput, hasTag, isCommand, removeHtml, sendRequest } from '../utils';
+import { Bot } from '../bot';
+import { Message } from '../types';
 
 export class SearchPlugin extends PluginBase {
   constructor(bot: Bot) {
@@ -63,13 +66,13 @@ export class SearchPlugin extends PluginBase {
       'sec-fetch-site': 'same-origin',
       'sec-fetch-mode': 'cors',
       referer: 'https://duckduckgo.com/',
-      'accept-language': this.bot.config.locale + ';q=0.9',
+      'accept-language': (this.bot.config.locale || 'en_US') + ';q=0.9',
     };
     const params = {
-      l: this.bot.config.locale,
-      dl: this.bot.config.locale.slice(0, 2),
-      ct: this.bot.config.locale.slice(0, 2).toUpperCase(),
-      ss_mkt: this.bot.config.locale.slice(0, 2),
+      l: this.bot.config.locale || 'en_US',
+      dl: (this.bot.config.locale || 'en_US').slice(0, 2),
+      ct: (this.bot.config.locale || 'en_US').slice(0, 2).toUpperCase(),
+      ss_mkt: (this.bot.config.locale || 'en_US').slice(0, 2),
       o: 'json',
       q: input,
       vqd: searchObj[1],
@@ -77,7 +80,7 @@ export class SearchPlugin extends PluginBase {
       p: '1',
       v7exp: 'a',
     };
-    if (!hasTag(this.bot, msg.conversation.id, 'nonsfw')) {
+    if (!(await hasTag(this.bot, msg.conversation.id, 'nonsfw'))) {
       params['kp'] = -2;
     }
 

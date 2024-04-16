@@ -1,132 +1,140 @@
-import { readFileSync } from 'fs';
-import { IncomingMessage, ServerResponse } from 'http';
-import { createServer } from 'https';
-import { Bot, Config, Database } from '.';
-import { catchException, getBindingsSlug, logger } from './utils';
+import { WebSocketServer, WebSocket } from 'ws';
+import { BotSocket, Message, MongoDatabases, WSBroadcast, WSInit, WSMessage, WSPong } from './types';
+import { catchException, logger, now } from './utils';
+import { Bot } from './bot';
+import { MongoClient } from 'mongodb';
 
-process.setMaxListeners(16);
+let mongo: MongoClient;
+const wss: WebSocketServer = new WebSocketServer({ port: 8080 });
 
-const bots: Bot[] = [];
+const close = () => {
+  logger.info(`🟡 Closing connection for ${wss.clients.size} client(s)...`);
 
-export const stop = async (exit?: boolean): Promise<void> => {
-  if (bots.length === 0) {
-    logger.info(`🟡 No bots to stop!`);
+  if (!wss.clients.size) {
     process.exit();
-  } else {
-    logger.info(`🟡 Stopping ${bots.length} bot(s)...`);
-    bots.map(async (bot, i) => {
-      try {
-        await bot.stop();
-        bots.splice(i, 1);
-      } catch (e) {
-        logger.error(e.message);
-      }
-
-      if (bots.length == 0) {
-        logger.info('✅ Closed all bot(s)');
-        if (exit) {
-          process.exit();
-        }
-      } else {
-        logger.info(`⏳ Pending ${bots.length} bot(s)...`);
-      }
-    });
   }
+
+  wss.clients.forEach((socket) => {
+    socket.terminate();
+  });
+
+  mongo.close();
+  process.exit();
 };
 
-export const start = async (): Promise<void> => {
-  if (Array.isArray(bots) && bots.length > 0) {
-    await stop();
-  }
-  const config = Config.loadFromFile('config.json');
-  const configs = [];
-  if (config) {
-    configs.push(config);
-  } else {
-    Object.keys(db.configs).map((name) => {
-      configs.push(...Config.loadInstancesFromJSON(db.configs[name]));
-    });
-  }
-
-  await Promise.all(
-    configs.map(async (config) => {
-      if (config.enabled) {
-        const bot = new Bot(config);
-        process.on('unhandledRejection', (exception: Error) => {
-          catchException(exception, bot);
-        });
-        await bot.start();
-        bots.push(bot);
-      } else {
-        logger.info(`🔴 Bot is disabled: ${config.icon} ${config.name} [${config.bindings}]`);
-      }
-    }),
-  );
-  logger.info(`✅ Started ${bots.length}/${configs.length} bot(s)`);
-};
-
-process.on('SIGINT', () => stop(true));
-process.on('SIGTERM', () => stop(true));
+process.on('SIGINT', () => close());
+process.on('SIGTERM', () => close());
+process.on('SIGUSR1', () => close());
+process.on('SIGUSR2', () => close());
 process.on('exit', () => {
   logger.info('❎ Exit process');
 });
 
-if (process.env.ENV !== 'dev') {
-  const options = {
-    key: readFileSync('data/key.pem'),
-    cert: readFileSync('data/cert.pem'),
-  };
+const bots: BotSocket = {};
+export const db: MongoDatabases = {};
 
-  createServer(options, async (req: IncomingMessage, res: ServerResponse) => {
-    const path = req.url.split('/');
-    let found = false;
-    let content: string;
+const start = () => {
+  logger.info('🟡 WebSocket server waiting for connections...');
+  wss.on('connection', (ws: WebSocket) => {
+    logger.info('🟢 Client connected');
+    let bot: Bot;
 
-    if (req.method === 'GET') {
-      content = null;
-    } else if (req.method === 'POST') {
-      content = await new Promise((resolve) => {
-        const chunks = [];
-        req.on('data', (chunk) => {
-          chunks.push(chunk);
-        });
-        req.on('end', () => {
-          resolve(JSON.stringify(JSON.parse(Buffer.concat(chunks).toString()), null, 4));
-        });
-      });
-    }
+    ws.on('error', console.error);
 
-    await Promise.all(
-      bots.map(async (bot) => {
-        let name = path[1];
-        let bindings = null;
-        if (name.indexOf(':') > -1) {
-          name = path[1].split(':')[0];
-          bindings = path[1].split(':')[1];
-        }
-        const slug = getBindingsSlug(bot.bindings);
-        if (bot.config.name == name) {
-          found = true;
-          if (bindings) {
-            if (bindings == slug) {
-              await bot.webhookHandler(req, res, content);
-            }
-          } else {
-            await bot.webhookHandler(req, res, content);
+    ws.on('close', (code: number) => {
+      if (code === 1005) {
+        logger.info('🔴 Disconnected');
+      } else if (code === 1006) {
+        logger.info('🔴 Terminated');
+      }
+    });
+
+    ws.on('open', (code: number) => {
+      console.log('open: %s', code);
+    });
+
+    ws.on('message', async (data: string) => {
+      try {
+        const json = JSON.parse(data);
+        if (json.type === 'init') {
+          const init: WSInit = json;
+          bot = new Bot(ws, init.config, init.user, init.platform);
+          if (!db[init.platform]) {
+            db[init.platform] = mongo.db(init.platform);
           }
+          bot.initPlugins();
+          bots[bot.user.id] = ws;
+          await bot.initTranslations();
+          logger.info(
+            `✅ Connected as ${bot.config.icon} ${bot.user.firstName} (@${bot.user.username}) [${bot.user.id}] on platform '${init.platform}'`,
+          );
+          bot.scheduleCronJobs();
+        } else if (json.type === 'message') {
+          const msg: WSMessage = json;
+          if (bot) {
+            bot.messagesHandler(msg.message);
+          }
+        } else if (json.type === 'ping') {
+          logger.debug('Ping');
+          const pong: WSPong = {
+            bot: bot ? bot.config.name : '?',
+            platform: bot ? bot.platform : '?',
+            type: 'pong',
+          };
+          ws.send(JSON.stringify(pong));
+        } else if (json.type === 'broadcast') {
+          const broadcast: WSBroadcast = json;
+          const message: WSMessage = {
+            bot: broadcast.bot,
+            platform: broadcast.platform,
+            type: 'message',
+            message: new Message(
+              null,
+              broadcast.message.conversation,
+              bot.user,
+              broadcast.message.content,
+              broadcast.message.type,
+              now(),
+              null,
+              broadcast.message.extra,
+            ),
+          };
+          if (Array.isArray(broadcast.target)) {
+            bot.broadcastHandler(broadcast.message);
+            broadcast.target.forEach((target) => bots[target].send(JSON.stringify(message)));
+          } else if (broadcast.target === '*' || broadcast.target === 'all') {
+            wss.clients.forEach((client) => {
+              if (client !== ws) {
+                bot.broadcastHandler(broadcast.message);
+                client.send(JSON.stringify(message));
+              }
+            });
+          } else {
+            bot.broadcastHandler(broadcast.message);
+            bots[broadcast.target].send(JSON.stringify(message));
+          }
+        } else {
+          logger.warning(`Unsupported data: ${data}`);
         }
-      }),
-    );
+      } catch (error) {
+        catchException(error);
+      }
+    });
+  });
+};
 
-    if (!res.writableEnded) {
-      res.statusCode = found ? 200 : 404;
-      res.writeHead(found ? 200 : 404);
-      res.end(found ? 'OK' : 'Not Found');
-    }
-  }).listen(1984);
-}
+MongoClient.connect(process.env.MONGODB_URI, {
+  appName: 'polaris',
+}).then(async (client: MongoClient) => {
+  logger.info(`✅ Connected successfully to database`);
 
-export const db = new Database();
+  db['polaris'] = client.db('polaris');
+  mongo = client;
+
+  await start();
+});
+
+/*export const db = new Database();
 db.events.once('loaded', async () => {
   await start();
   db.events.on('update:configs', async () => {
@@ -134,3 +142,4 @@ db.events.once('loaded', async () => {
   });
 });
 db.init();
+*/

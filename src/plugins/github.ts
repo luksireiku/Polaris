@@ -1,4 +1,6 @@
-import { Bot } from '..';
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
+import { Bot } from '../bot';
 import { PluginBase } from '../plugin';
 import { Conversation } from '../types';
 import { capitalize, getTaggedWith, logger } from '../utils';
@@ -13,7 +15,7 @@ export class GitHubPlugin extends PluginBase {
 
     if (data) {
       let text;
-      const subs = getTaggedWith(this.bot, `sub:github/${data.repository.name}`);
+      const subs = await getTaggedWith(this.bot, `sub:github/${data.repository.name}`);
       if (data.head_commit) {
         text = `<a href="${data.compare}">${data.commits.length} new commit</a> to <b>${
           data.repository.name

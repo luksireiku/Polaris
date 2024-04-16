@@ -1,5 +1,8 @@
-import { Bot, Message } from '..';
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
+import { Bot } from '../bot';
 import { PluginBase } from '../plugin';
+import { Message } from '../types';
 import { capitalize, generateCommandHelp, getInput, isCommand, lstrip, sendRequest } from '../utils';
 
 export class ZaragozaPlugin extends PluginBase {
@@ -72,14 +75,14 @@ export class ZaragozaPlugin extends PluginBase {
       }
 
       if (content.street) {
-        text = `<b>${content.street}</b>\n   ${this.strings.station}: <b>${content.id}</b>  [${content.lines}]\n\n`;
+        text = `<b>${content.street}</b>\n   ${this.strings.station}: <b>${content.id}</b>  [${content.lines}]\n`;
       } else {
-        text = `<b>${this.strings.station}: ${content.id}</b>\n\n`;
+        text = `<b>${this.strings.station}: ${content.id}</b>\n`;
       }
 
       if (content.times && Array.isArray(content.times)) {
         content.times.map((bus) => {
-          text += ` • <b>${bus.time}</b>  ${bus.line} <i>${bus.destination}</i>\n`;
+          text += `\n • <b>${bus.time}</b>  ${bus.line} <i>${bus.destination}</i>`;
         });
       } else {
         return this.bot.replyMessage(msg, this.bot.errors.noResults);

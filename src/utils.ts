@@ -1,42 +1,38 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { exec } from 'child_process';
-import { set } from 'firebase/database';
 import fs from 'fs';
 import mime from 'mime-types';
 import fetch, { BodyInit, HeadersInit, RequestInit, Response } from 'node-fetch';
 import os from 'os';
 import { ParsedUrlQueryInput } from 'querystring';
 import { pipeline } from 'stream';
-import tmp from 'tmp';
+import { FileResult, fileSync } from 'tmp';
 import util from 'util';
 import winston, { createLogger, transports, format as winstonFormat } from 'winston';
 import 'winston-daily-rotate-file';
-import { Bot, Message, PluginBase } from '.';
-import { BindingsBase } from './bindings';
 import { db } from './main';
-import { CoordinatesResult, HTTPResponseError, iString } from './types';
+import { CoordinatesResult, HTTPResponseError, Message, iString } from './types';
+import { Bot } from './bot';
+import { PluginBase } from './plugin';
 
 export const getPluginSlug = (plugin: PluginBase): string => {
   return plugin.constructor.name.replace('Plugin', '').toLowerCase();
 };
 
-export const getBindingsSlug = (plugin: BindingsBase): string => {
-  return plugin.constructor.name.replace('Bindings', '').toLowerCase();
-};
-
-export const isOwner = (bot: Bot, uid: number | string, msg: Message = null): boolean => {
-  return hasTag(bot, uid, 'owner') || (msg && msg.sender.id == bot.config.owner);
+export const isOwner = async (bot: Bot, uid: number | string, msg: Message = null): Promise<boolean> => {
+  return (await hasTag(bot, uid, 'owner')) || (msg && msg.sender.id == bot.config.owner);
 };
 
 export const isAdmin = async (bot: Bot, uid: number | string, msg: Message = null): Promise<boolean> => {
-  return hasTag(bot, uid, 'admin') || (await isGroupAdmin(bot, uid, msg));
+  return (await hasTag(bot, uid, 'admin')) || (await isGroupAdmin(bot, uid, msg));
 };
 
-export const isMod = (bot: Bot, uid: number | string, gid: number | string): boolean => {
+export const isMod = async (bot: Bot, uid: number | string, gid: number | string): Promise<boolean> => {
   if (typeof uid != 'string') {
     uid = String(uid);
   }
 
-  if (hasTag(bot, uid, 'globalmod') || hasTag(bot, uid, `mod:${gid}`)) {
+  if ((await hasTag(bot, uid, 'globalmod')) || (await hasTag(bot, uid, `mod:${gid}`))) {
     return true;
   } else {
     return false;
@@ -48,66 +44,69 @@ export const isGroupAdmin = async (bot: Bot, uid: number | string, msg: Message 
     uid = String(uid);
   }
   if (msg && +msg.conversation.id < 0) {
-    const chatAdmins = await bot.getChatAdmins(msg.conversation.id);
-    for (const admin of chatAdmins) {
-      if (uid == String(admin.id)) {
-        return true;
+    const chatAdmins = await bot.bindings.getChatAdministrators(msg.conversation.id);
+    if (chatAdmins) {
+      for (const admin of chatAdmins) {
+        if (uid == String(admin.id)) {
+          return true;
+        }
       }
     }
   }
   return false;
 };
 
-export const isTrusted = (bot: Bot, uid: number | string, msg: Message = null): boolean => {
-  return hasTag(bot, uid, 'trusted') || isOwner(bot, uid, msg);
+export const isTrusted = async (bot: Bot, uid: number | string, msg: Message = null): Promise<boolean> => {
+  return (await hasTag(bot, uid, 'trusted')) || isOwner(bot, uid, msg);
 };
 
-export const getTags = (bot: Bot, target: number | string, tagFilter?: string): string[] => {
+export const getTags = async (bot: Bot, target: number | string, tagFilter?: string): Promise<string[]> => {
   if (typeof target != 'string') {
     target = String(target);
   }
-  if (db.tags && db.tags[target] !== undefined) {
-    const tags = [];
-    Object.keys(db.tags[target]).map((i) => {
-      const tag = db.tags[target][i];
-      if (tagFilter && tagFilter.indexOf('?') > -1 && !tag.startsWith(tagFilter.split('?')[0])) {
+  const tags = db[bot.platform].collection('tags');
+  const tag = await tags.findOne({ id: target });
+  if (tag) {
+    const tags_ = [];
+    Object.keys(tag.list).map((i) => {
+      const tag_ = tag.list[i];
+      if (tagFilter && tagFilter.indexOf('?') > -1 && !tag_.startsWith(tagFilter.split('?')[0])) {
         return;
       }
-      const inputMatch = tagForBotRegExp.exec(tag);
+      const inputMatch = tagForBotRegExp.exec(tag_);
       if (inputMatch) {
         if (inputMatch && (inputMatch[1] === bot.config.name || inputMatch[1] === bot.user.username)) {
-          tags.push(tag.replace(tagForBotRegExp, ''));
+          tags_.push(tag_.replace(tagForBotRegExp, ''));
         }
       } else {
-        tags.push(tag);
+        tags_.push(tag_);
       }
     });
-    return tags;
-  } else {
-    return [];
+    return tags_;
   }
+  return [];
 };
 
-export const getTaggedWith = (bot: Bot, tag: string): string[] => {
+export const getTaggedWith = async (bot: Bot, tag: string): Promise<string[]> => {
   const subs = [];
   for (const gid in db.groups) {
-    if (hasTag(bot, gid, tag)) {
+    if (await hasTag(bot, gid, tag)) {
       subs.push(gid);
     }
   }
   for (const uid in db.users) {
-    if (hasTag(bot, uid, tag)) {
+    if (await hasTag(bot, uid, tag)) {
       subs.push(uid);
     }
   }
   return subs;
 };
 
-export const hasTag = (bot: Bot, target: number | string, tag: string): boolean => {
+export const hasTag = async (bot: Bot, target: number | string, tag: string): Promise<boolean> => {
   if (typeof target != 'string') {
     target = String(target);
   }
-  const tags = getTags(bot, target);
+  const tags = await getTags(bot, target);
   if (tags && tag.indexOf('?') > -1) {
     for (const targetTag of tags) {
       if (targetTag.startsWith(tag.split('?')[0])) {
@@ -122,45 +121,57 @@ export const hasTag = (bot: Bot, target: number | string, tag: string): boolean 
   }
 };
 
-export const setTag = (bot: Bot, target: number | string, tag: string): void => {
+export const setTag = async (bot: Bot, target: number | string, tag: string): Promise<void> => {
   if (typeof target != 'string') {
     target = String(target);
   }
-  const tags = getTags(bot, target);
-  if (tags && tags.indexOf(tag) == -1) {
+  const allTags = await getTags(bot, target);
+  if (allTags && allTags.indexOf(tag) == -1) {
     let found = false;
-    if (db.tags[target] && tag.indexOf(':') > -1) {
-      for (const i of Object.keys(db.tags[target])) {
-        const targetTag = db.tags[target][i];
+    const tags = db[bot.platform].collection('tags');
+    const currentTags = await tags.findOne({ id: target });
+    if (currentTags && currentTags.list.length && tag.indexOf(':') > -1) {
+      for (const i of Object.keys(currentTags.list)) {
+        const targetTag = currentTags.list[i];
         if (targetTag.startsWith(tag.split(':')[0] + ':')) {
-          db.tags[target][i] = tag;
+          currentTags.list[i] = tag;
           found = true;
           break;
         }
       }
     }
     if (found == false) {
-      if (db.tags[target]) {
-        db.tags[target][Object.keys(db.tags[target]).length] = tag;
+      if (currentTags && currentTags.list.length) {
+        tags.updateOne(
+          { id: target },
+          {
+            $set: {
+              list: [...currentTags.list, tag].sort(),
+            },
+          },
+        );
       } else {
-        db.tags[target] = {
-          0: tag,
-        };
+        tags.insertOne({
+          id: target,
+          list: [tag],
+        });
       }
     }
-    db.tags[target] = sortList(db.tags[target]);
-    set(db.tagsSnap.child(target).ref, db.tags[target]);
   }
 };
 
-export const delTag = (bot: Bot, target: number | string, tag: string): void => {
+export const delTag = async (bot: Bot, target: number | string, tag: string): Promise<void> => {
   if (typeof target != 'string') {
     target = String(target);
   }
 
-  if (db.tags[target]) {
-    for (const i of Object.keys(db.tags[target])) {
-      let targetTag = db.tags[target][i];
+  const tags = db[bot.platform].collection('tags');
+  const currentTags = await tags.findOne({ id: target });
+
+  if (currentTags && currentTags.list) {
+    const tagList = currentTags.list;
+    for (const i of Object.keys(tagList)) {
+      let targetTag = tagList[i];
       const inputMatch = tagForBotRegExp.exec(targetTag);
       if (inputMatch) {
         if (inputMatch && (inputMatch[1] === bot.config.name || inputMatch[1] === bot.user.username)) {
@@ -171,11 +182,17 @@ export const delTag = (bot: Bot, target: number | string, tag: string): void => 
         (tag.indexOf('?') > -1 && targetTag.startsWith(tag.split('?')[0])) ||
         (tag.indexOf('?') == -1 && targetTag == tag)
       ) {
-        delete db.tags[target][i];
+        delete tagList[i];
       }
     }
-    db.tags[target] = sortList(db.tags[target]);
-    set(db.tagsSnap.child(target).ref, db.tags[target]);
+    tags.updateOne(
+      { id: target },
+      {
+        $set: {
+          list: tagList.sort(),
+        },
+      },
+    );
   }
 };
 
@@ -188,7 +205,13 @@ export const isInt = (number: number | string): boolean => {
   return !isNaN(parseFloat(number));
 };
 
-export const getTarget = (bot: Bot, m: Message, input: string, noSearch?: boolean, ignoreSelf?: boolean): string => {
+export const getTarget = async (
+  bot: Bot,
+  m: Message,
+  input: string,
+  noSearch?: boolean,
+  ignoreSelf?: boolean,
+): Promise<string> => {
   if (m.reply) {
     return String(m.reply.sender.id);
   } else if (input) {
@@ -199,43 +222,30 @@ export const getTarget = (bot: Bot, m: Message, input: string, noSearch?: boolea
       if (bot.user.username.toLowerCase() == target.slice(1).toLowerCase()) {
         return String(bot.user.id);
       }
-      for (const uid in db.users) {
-        if (
-          db.users[uid]['username'] !== undefined &&
-          db.users[uid]['username'].toLowerCase() == target.slice(1).toLowerCase()
-        ) {
-          return uid;
-        }
+      const users = db[bot.platform].collection('users');
+      const user = await users.findOne({ username: target });
+      if (user) {
+        return user.id;
       }
-      for (const gid in db.groups) {
-        if (
-          db.groups[gid]['username'] !== undefined &&
-          db.groups[gid]['username'].toLowerCase() == target.slice(1).toLowerCase()
-        ) {
-          return gid;
-        }
+      const groups = db[bot.platform].collection('groups');
+      const group = await groups.findOne({ username: target });
+      if (group) {
+        return group.id;
       }
     } else if (target && target.startsWith('<@')) {
       target.replace(new RegExp('<@!?([d]+)>', 'gim'), '$1');
     } else if (target && target == '-g') {
       return String(m.conversation.id);
     } else if (!noSearch) {
-      for (const uid in db.users) {
-        let name = '';
-        if (db.users[uid].first_name !== undefined) {
-          name += db.users[uid].first_name;
-        }
-        if (db.users[uid].last_name !== undefined) {
-          name += ' ' + db.users[uid].last_name;
-        }
-        if (new RegExp(target, 'gim').test(name)) {
-          return uid;
-        }
+      const users = db[bot.platform].collection('users');
+      const user = await users.findOne({ name: { $regex: new RegExp(target, 'gim') } });
+      if (user) {
+        return user.id;
       }
-      for (const gid in db.groups) {
-        if (new RegExp(target, 'gim').test(db.groups[gid].title)) {
-          return gid;
-        }
+      const groups = db[bot.platform].collection('groups');
+      const group = await groups.findOne({ name: { $regex: new RegExp(target, 'gim') } });
+      if (group) {
+        return group.id;
       }
     }
     if (!target) {
@@ -304,29 +314,33 @@ export const allButNWord = (text: string, word = 1): string => {
   return text.slice(text.indexOf(text.split(' ')[word]));
 };
 
-export const getUsername = (uid: number | string, includeNick = true): string => {
+export const getUsername = async (bot: Bot, uid: number | string, includeNick = true): Promise<string> => {
   if (typeof uid != 'string') {
     uid = String(uid);
   }
   let name = '';
-  if (db.users[uid] !== undefined) {
-    if (includeNick && db.users[uid].nick !== undefined) {
-      name += db.users[uid].nick;
+  const users = db[bot.platform].collection('users');
+  const user = await users.findOne({ id: uid });
+  const groups = db[bot.platform].collection('groups');
+  const group = await groups.findOne({ id: uid });
+  if (user) {
+    if (includeNick && user.nick !== undefined) {
+      name += user.nick;
     } else {
-      if (db.users[uid].first_name !== undefined) {
-        name += db.users[uid].first_name;
+      if (user.first_name !== undefined) {
+        name += user.first_name;
       }
-      if (db.users[uid].last_name !== undefined) {
-        name += ' ' + db.users[uid].last_name;
+      if (user.last_name !== undefined) {
+        name += ' ' + user.last_name;
       }
     }
-    if (db.users[uid].username !== undefined && db.users[uid].username !== '') {
-      name = `@${db.users[uid].username}`;
+    if (user.username !== undefined && user.username !== '') {
+      name = `@${user.username}`;
     }
-  } else if (db.groups[uid] !== undefined) {
-    name = db.groups[uid].title;
-    if (db.groups[uid].username !== undefined && db.groups[uid].username !== '') {
-      name = `@${db.groups[uid].username}`;
+  } else if (group !== undefined) {
+    name = group.title;
+    if (group.username !== undefined && group.username !== '') {
+      name = `@${group.username}`;
     }
   } else {
     name = '[null]';
@@ -334,29 +348,30 @@ export const getUsername = (uid: number | string, includeNick = true): string =>
   return name;
 };
 
-export const getFullName = (uid: number | string, includeUsername = true, includeNick = true): string => {
+export const getFullName = async (bot: Bot, uid: number | string, includeUsername = true): Promise<string> => {
   if (typeof uid != 'string') {
     uid = String(uid);
   }
+  const users = db[bot.platform].collection('users');
+  const user = await users.findOne({ id: uid });
+  const groups = db[bot.platform].collection('groups');
+  const group = await groups.findOne({ id: uid });
   let name = '';
-  if (db.users[uid] !== undefined) {
-    if (includeNick && db.users[uid].nick !== undefined) {
-      name += db.users[uid].nick;
-    } else {
-      if (db.users[uid].first_name !== undefined) {
-        name += db.users[uid].first_name;
-      }
-      if (db.users[uid].last_name !== undefined) {
-        name += ' ' + db.users[uid].last_name;
-      }
+  if (user) {
+    if (user['first_name'] !== undefined) {
+      name += user['first_name'];
     }
-    if (includeUsername && db.users[uid].username !== undefined) {
-      name += ` (@${db.users[uid].username})`;
+    if (user['last_name'] !== undefined) {
+      name += ' ' + user['last_name'];
     }
-  } else if (db.groups[uid] !== undefined) {
-    name = db.groups[uid].title;
-    if (db.groups[uid].username !== undefined) {
-      name += ` (@${db.groups[uid].username})`;
+
+    if (includeUsername && user['username']) {
+      name += ` (@${user['username']})`;
+    }
+  } else if (group) {
+    name = group['title'];
+    if (group['username']) {
+      name += ` (@${group['username']})`;
     }
   } else {
     name = '[null]';
@@ -628,7 +643,7 @@ export const download = async (
   const contentType =
     response.headers.get('content-type') || response.headers.get('Content-Type') || 'application/octet-stream';
   const contentLength = response.headers.get('content-length') || response.headers.get('Content-Length') || '0';
-  const tempfile = tmp.fileSync({ mode: 0o644, postfix: `.${mime.extension(contentType)}` });
+  const tempfile = fileSync({ mode: 0o644, postfix: `.${mime.extension(contentType)}` });
   if (response.ok == undefined) {
     logger.error(`Unexpected response: ${response.statusText}`);
     return null;
@@ -654,7 +669,7 @@ export const getExtension = (url: string): string => {
 
 export const mp3ToOgg = async (input: string): Promise<string> => {
   try {
-    const output = tmp.fileSync({ mode: 0o644, postfix: `.ogg` });
+    const output = fileSync({ mode: 0o644, postfix: `.ogg` });
     const command = `ffmpeg -i ${input} -ac 1 -c:a libopus -b:a 16k -y ${output.name}`;
     const result = await execResult(command);
     if (result != null) {
@@ -668,11 +683,38 @@ export const mp3ToOgg = async (input: string): Promise<string> => {
   }
 };
 
+export const toBase64 = (filePath): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    fs.readFile(filePath, (err, data) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+      const base64String = data.toString('base64');
+      resolve(base64String);
+    });
+  });
+};
+
+export const fromBase64 = (base64String): Promise<FileResult> => {
+  return new Promise((resolve, reject) => {
+    const bufferData = Buffer.from(base64String, 'base64');
+    const file: FileResult = fileSync({ mode: 0o644 });
+    fs.writeFile(file.name, bufferData, (err) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+      resolve(file);
+    });
+  });
+};
+
 export const getCoords = async (input: string, bot?: Bot): Promise<CoordinatesResult> => {
   let lang = 'en';
   let key = null;
   if (bot) {
-    lang = bot.config.locale.slice(0, 2);
+    lang = bot.config.locale || 'en_US';
     key = bot.config.apiKeys.googleDeveloperConsole;
   }
 
@@ -751,6 +793,21 @@ export const escapeRegExp = (text: string): string => {
 
 export const htmlToMarkdown = (text: string): string => {
   if (text) {
+    text = text.replace(new RegExp('<a href="(.*?)">(.*?)</a>', 'gim'), '[$2]($1)');
+    text = text.replace(new RegExp('<i>(.*?)</i>', 'gim'), '_$1_');
+    text = text.replace(new RegExp('<b>(.*?)</b>', 'gim'), '*$1*');
+    text = text.replace(new RegExp('<u>(.*?)</u>', 'gim'), '~$1~');
+    text = text.replace(new RegExp('<code>(.*?)</code>', 'gim'), '`$1`');
+    text = text.replace(new RegExp('<pre>(.*?)</pre>', 'gim'), '```$1```');
+
+    text = text.replace(new RegExp('&lt;', 'gim'), '<');
+    text = text.replace(new RegExp('&gt;', 'gim'), '>');
+  }
+  return text;
+};
+
+export const htmlToMarkdownLegacy = (text: string): string => {
+  if (text) {
     const replacements = [
       { pattern: '<code class="language-([\\w]+)">([\\S\\s]+)</code>', sub: '```$1\n$2```' },
       { pattern: '<a href="(.[^<]+)">(.[^<]+)</a>', sub: '$1' },
@@ -804,6 +861,7 @@ export const splitLargeMessage = (content: string, maxLength: number): string[] 
         text = line + lineBreak;
       }
     });
+    texts.push(text);
   }
   return texts;
 };
@@ -879,6 +937,7 @@ export const merge = (base: any, extension: any): any => {
 
 export const catchException = (exception: Error, bot: Bot = null, message: Message = null): Error => {
   logger.error(`Catch exception: ${exception.message}`);
+  console.error(exception['stack']);
   if (bot) {
     if (exception['response']) {
       (exception as HTTPResponseError).response
@@ -889,7 +948,7 @@ export const catchException = (exception: Error, bot: Bot = null, message: Messa
     } else if (exception['_'] == 'error') {
       bot.sendAlert(JSON.stringify(exception, null, 4), 'json');
     } else {
-      bot.sendAlert(exception.message);
+      bot.sendAlert(exception.message, 'json');
     }
     if (message) {
       bot.replyMessage(message, bot.errors.exceptionFound);
@@ -999,4 +1058,27 @@ export const systemName = (): string => {
 
 export const systemVersion = (): string => {
   return os.version();
+};
+
+export const getMessageIcon = (type: string): string => {
+  if (type == 'text') {
+    return '🗨️';
+  } else if (type == 'photo') {
+    return '🖼️';
+  } else if (type == 'voice') {
+    return '🎵';
+  } else if (type == 'audio') {
+    return '🎶';
+  } else if (type == 'video') {
+    return '🎥';
+  } else if (type == 'animation') {
+    return '🎬';
+  } else if (type == 'document') {
+    return '📦';
+  } else if (type == 'sticker') {
+    return '🎭';
+  } else if (type == 'unsupported') {
+    return '⚠️';
+  }
+  return type;
 };

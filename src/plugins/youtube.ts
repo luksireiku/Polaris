@@ -1,7 +1,9 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import format from 'string-format';
-import { Bot, Message } from '..';
 import { PluginBase } from '../plugin';
 import { generateCommandHelp, getInput, isCommand, sendRequest } from '../utils';
+import { Bot } from '../bot';
+import { Message } from '../types';
 
 export class YouTubePlugin extends PluginBase {
   constructor(bot: Bot) {
@@ -46,7 +48,7 @@ export class YouTubePlugin extends PluginBase {
       type: 'video',
       maxResults: '10',
       q: input,
-      regionCode: this.bot.config.locale.slice(3),
+      regionCode: (this.bot.config.locale || 'en_US').slice(3),
       key: this.bot.config.apiKeys.googleDeveloperConsole,
     };
     const resp = await sendRequest(url, params, null, null, false, this.bot);

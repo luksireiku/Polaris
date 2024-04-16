@@ -1,5 +1,8 @@
-import { Bot, Message } from '..';
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
+import { Bot } from '../bot';
 import { PluginBase } from '../plugin';
+import { Message } from '../types';
 import { getInput, sendRequest } from '../utils';
 
 export class CinemaPlugin extends PluginBase {
@@ -45,11 +48,17 @@ export class CinemaPlugin extends PluginBase {
         const sessions = item.sessions
           .map((session) => {
             let label = session.time;
-            if (session.type) label = `${label} [${session.type}]`;
+            if (session.type) label = `${label} ${session.type}`;
             return `<a href="${session.url}">${label}</a>`;
           })
           .join(', ');
-        text += `\n<b>${item.name}</b>\n<a href="${item.source}">🔗</a> <a href="${item.trailer}">🎬</a> ⌛ ${item.durationReadable}\n🎫 ${sessions}\n`;
+        text += `\n<b>${item.name}</b>\n`;
+        text += `<a href="${item.source}">🔗</a>`;
+        if (item.trailer) {
+          text += `<a href="${item.trailer}">🎬</a>`;
+        }
+        text += `⌛ ${item.durationReadable}`;
+        text += `\n🎫 ${sessions}\n`;
       });
     }
 

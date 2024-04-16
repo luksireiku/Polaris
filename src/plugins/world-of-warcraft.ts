@@ -1,6 +1,6 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import FormData from 'form-data';
 import format from 'string-format';
-import { Bot, Message } from '..';
 import { PluginBase } from '../plugin';
 import {
   btoa,
@@ -15,6 +15,8 @@ import {
   sendRequest,
   setTag,
 } from '../utils';
+import { Bot } from '../bot';
+import { Message } from '../types';
 
 export class WorldOfWarcraftPlugin extends PluginBase {
   accessToken: string;
@@ -103,11 +105,11 @@ export class WorldOfWarcraftPlugin extends PluginBase {
       let characterName = null;
 
       if (!input) {
-        const tags = getTags(this.bot, uid, 'wow:?');
+        const tags = await getTags(this.bot, uid, 'wow:?');
         if (tags && tags.length > 0) {
-          const summonerInfo = tags[0].split(':')[1];
-          if (summonerInfo.indexOf('/') > -1) {
-            const split = summonerInfo.split('/');
+          const characterInfo = tags[0].split(':')[1];
+          if (characterInfo.indexOf('/') > -1) {
+            const split = characterInfo.split('/');
             realm = split[0];
             characterName = split[1];
             if (split.length > 2) {
@@ -120,7 +122,7 @@ export class WorldOfWarcraftPlugin extends PluginBase {
         }
       } else {
         const words = input.split(' ');
-        characterName = words.pop();
+        characterName = words.pop().toLowerCase();
         realm = words.join('-').toLowerCase();
       }
       const [character, media, raids, pvp, professions, statistics, raiderIO] = await Promise.all([
@@ -147,9 +149,9 @@ export class WorldOfWarcraftPlugin extends PluginBase {
       let guild = null;
       if ('guild' in character) {
         if (character.realm.name == character.guild.realm.name) {
-          guild = `<${character.guild.name}>`;
+          guild = `-${character.guild.name}-`;
         } else {
-          guild = `<${character.guild.name}-${character.guild.realm.name}>`;
+          guild = `-${character.guild.name}-${character.guild.realm.name}-`;
         }
       }
       let mainStat = 'strength';
@@ -207,8 +209,8 @@ export class WorldOfWarcraftPlugin extends PluginBase {
           raidProgression += `\n\t${mode.difficulty.name}: ${mode.progress.completed_count}/${mode.progress.total_count}`;
         });
       }
-      let mythicScore = '';
-      if (raiderIO.mythic_plus_scores_by_season && raiderIO.mythic_plus_scores_by_season.length > 0) {
+      let mythicScore = null;
+      if (raiderIO && raiderIO.mythic_plus_scores_by_season && raiderIO.mythic_plus_scores_by_season.length > 0) {
         const lastSeason = raiderIO.mythic_plus_scores_by_season[0];
         mythicScore = `${this.strings['mythicPlusScores']}:`;
         let empty = true;
@@ -226,13 +228,14 @@ export class WorldOfWarcraftPlugin extends PluginBase {
       if (mythicScore.length == 0) {
         mythicScore = null;
       }
-      let photo = null;
-      media.assets.map((asset) => {
-        if (asset.key == 'main') {
-          photo = `${asset.value}?update=${Math.trunc(now() / 3600)}`;
-          return;
-        }
-      });
+      let asset = media.assets.find((asset) => asset.key === 'main');
+      if (!asset) {
+        asset = media.assets.find((asset) => asset.key === 'inset');
+      }
+      if (!asset) {
+        asset = media.assets.find((asset) => asset.key === 'avatar');
+      }
+      const photo = `${asset.value}?update=${Math.trunc(now() / 3600)}`;
       text = `${title ? title + '\n\t' : ''}${name}\n${
         guild ? guild + '\n\n' : ''
       }${characterClass}\n\t${race}\n\n${info}\n\n${stats}\n\n${professionLevels ? professionLevels + '\n\n' : ''}${
@@ -302,7 +305,7 @@ export class WorldOfWarcraftPlugin extends PluginBase {
     const url = `https://${region}.api.blizzard.com/profile/wow/character/${realm}/${characterName}${method}`;
     const params = {
       namespace: `profile-${region}`,
-      locale: this.bot.config.locale,
+      locale: this.bot.config.locale || 'en_US',
       access_token: this.accessToken,
     };
     const resp = await sendRequest(url, params, null, null, false, this.bot);

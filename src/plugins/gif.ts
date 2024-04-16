@@ -1,5 +1,8 @@
-import { Bot, Message } from '..';
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
+import { Bot } from '../bot';
 import { PluginBase } from '../plugin';
+import { Message } from '../types';
 import { generateCommandHelp, getInput, random, sendRequest } from '../utils';
 
 export class GifPlugin extends PluginBase {
